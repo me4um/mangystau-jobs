@@ -301,57 +301,56 @@ export default function App() {
       }).catch(() => {});
   }, [token]);
 
-  // ─── TELEGRAM WIDGET ─────────────────────────────────────────
-  // ИСПРАВЛЕНИЕ: Bot domain invalid решается через правильную настройку
-  // бота в BotFather командой /setdomain <ваш домен>
-  // Для локальной разработки используем ручной ввод Telegram ID
-  useEffect(() => {
-    if (!showLogin || !tgWidgetRef.current) return;
-    tgWidgetRef.current.innerHTML = "";
+  // ─── BOT-BASED AUTH (работает на любом домене, включая localhost) ─
+  const [loginCode, setLoginCode]       = useState("");
+  const [loginStep, setLoginStep]       = useState("start"); // start | waiting | code
+  const [loginPolling, setLoginPolling] = useState(null);
 
-    window.onTelegramAuth = async (tgUser) => {
-      try {
-        const res = await fetch(`${API}/api/auth/telegram`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(tgUser)
-        });
-        const data = await res.json();
-        if (data.success) {
-          setToken(data.token);
-          localStorage.setItem("mjToken", data.token);
-          setUser(data.user);
-          setShowLogin(false);
-          showToast("✅ Вы вошли как " + data.user.name);
-        } else { showToast("Ошибка входа: " + (data.error || "неизвестная")); }
-      } catch { showToast("Ошибка соединения с сервером"); }
-    };
-
-    const script = document.createElement("script");
-    script.src = "https://telegram.org/js/telegram-widget.js?22";
-    script.setAttribute("data-telegram-login", BOT_NAME);
-    script.setAttribute("data-size", "large");
-    script.setAttribute("data-radius", "12");
-    script.setAttribute("data-onauth", "onTelegramAuth(user)");
-    script.setAttribute("data-request-access", "write");
-    // КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: auth-url должен указывать на ваш домен
-    // Telegram проверяет домен виджета с доменом бота в BotFather
-    // Команда в BotFather: /setdomain → введите ваш домен (например mangystau-jobs.vercel.app)
-    script.async = true;
-    script.onerror = () => {
-      // Fallback если домен не настроен
-      if (tgWidgetRef.current) {
-        tgWidgetRef.current.innerHTML = `
-          <div style="text-align:center;color:#666;font-size:13px;padding:10px">
-            <div style="margin-bottom:8px">⚙️ Настройте домен в BotFather</div>
-            <div style="font-size:11px;color:#999">/setdomain → ${window.location.hostname}</div>
-          </div>
-        `;
+  // Генерируем уникальный код сессии и ждём пока бот его подтвердит
+  const startBotLogin = async () => {
+    try {
+      const res = await fetch(`${API}/api/auth/init-login`, { method: "POST" });
+      const data = await res.json();
+      if (data.success) {
+        setLoginCode(data.code);
+        setLoginStep("waiting");
+        // Открываем бота с кодом
+        window.open(`https://t.me/${BOT_NAME}?start=login_${data.code}`, "_blank");
+        // Начинаем polling — каждые 2 сек проверяем подтверждён ли вход
+        const interval = setInterval(async () => {
+          try {
+            const pollRes = await fetch(`${API}/api/auth/poll-login?code=${data.code}`);
+            const pollData = await pollRes.json();
+            if (pollData.success && pollData.token) {
+              clearInterval(interval);
+              setLoginPolling(null);
+              setToken(pollData.token);
+              localStorage.setItem("mjToken", pollData.token);
+              setUser(pollData.user);
+              setShowLogin(false);
+              setLoginStep("start");
+              setLoginCode("");
+              showToast("✅ Вы вошли как " + pollData.user.name);
+            }
+          } catch {}
+        }, 2000);
+        setLoginPolling(interval);
+        // Остановить через 5 минут
+        setTimeout(() => { clearInterval(interval); setLoginStep("start"); }, 300000);
       }
-    };
-    tgWidgetRef.current.appendChild(script);
+    } catch { showToast("Ошибка соединения"); }
+  };
 
-    return () => { delete window.onTelegramAuth; };
-  }, [showLogin]);
+  useEffect(() => {
+    return () => { if (loginPolling) clearInterval(loginPolling); };
+  }, [loginPolling]);
+
+  const cancelLogin = () => {
+    if (loginPolling) { clearInterval(loginPolling); setLoginPolling(null); }
+    setLoginStep("start");
+    setLoginCode("");
+    setShowLogin(false);
+  };
 
   const logout = async () => {
     await fetch(`${API}/api/auth/logout`, { method:"DELETE", headers:{ Authorization:`Bearer ${token}` } }).catch(()=>{});
@@ -884,25 +883,52 @@ export default function App() {
         </div>
       )}
 
-      {/* LOGIN MODAL */}
+      {/* LOGIN MODAL — Bot-based, работает на любом домене */}
       {showLogin && (
-        <div onClick={e => e.target===e.currentTarget && setShowLogin(false)}
-          style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:400, display:"flex", alignItems:"center", justifyContent:"center" }}>
-          <div style={{ background:"#fff", borderRadius:20, padding:32, width:"90%", maxWidth:360, textAlign:"center" }}>
+        <div onClick={e => e.target===e.currentTarget && cancelLogin()}
+          style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:400, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 16px" }}>
+          <div style={{ background:"#fff", borderRadius:20, padding:28, width:"100%", maxWidth:360, textAlign:"center" }}>
             <div style={{ fontFamily:"'Unbounded',sans-serif", fontSize:18, marginBottom:8 }}>Вход</div>
-            <p style={{ fontSize:14, color:"#7A7065", marginBottom:24, lineHeight:1.6 }}>
-              Войдите через Telegram — быстро и безопасно.<br/>Отклики придут вам в бот мгновенно.
-            </p>
-            <div ref={tgWidgetRef} style={{ display:"flex", justifyContent:"center", marginBottom:16, minHeight:48 }}></div>
-            {/* Инструкция по настройке домена */}
-            <div style={{ background:"#F4F1ED", borderRadius:10, padding:12, marginBottom:16, textAlign:"left", fontSize:12, color:"#555" }}>
-              <div style={{ fontWeight:600, marginBottom:6, fontSize:13 }}>⚙️ Если кнопка не работает:</div>
-              <div>1. Откройте <b>@BotFather</b> в Telegram</div>
-              <div>2. Отправьте <code style={{ background:"#E8E0D5", padding:"1px 4px", borderRadius:4 }}>/setdomain</code></div>
-              <div>3. Выберите <b>@{BOT_NAME}</b></div>
-              <div>4. Укажите домен: <code style={{ background:"#E8E0D5", padding:"1px 4px", borderRadius:4 }}>{typeof window !== "undefined" ? window.location.hostname : "ваш-домен.com"}</code></div>
-            </div>
-            <button onClick={() => setShowLogin(false)} style={{ background:"none", border:"none", color:"#7A7065", fontSize:13, cursor:"pointer" }}>Отмена</button>
+
+            {loginStep === "start" && (<>
+              <p style={{ fontSize:14, color:"#7A7065", marginBottom:24, lineHeight:1.6 }}>
+                Войдите через Telegram-бот.<br/>
+                Работает на любом устройстве без настройки домена.
+              </p>
+              <button onClick={startBotLogin}
+                style={{ width:"100%", padding:"14px 16px", background:"#229ED9", border:"none", borderRadius:14, color:"#fff", fontFamily:"'Unbounded',sans-serif", fontSize:14, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:10, marginBottom:12 }}>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="white"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12L8.32 13.617l-2.96-.924c-.643-.204-.657-.643.136-.953l11.57-4.461c.537-.194 1.006.131.828.942z"/></svg>
+                Войти через Telegram
+              </button>
+              <button onClick={() => setShowLogin(false)} style={{ background:"none", border:"none", color:"#7A7065", fontSize:13, cursor:"pointer" }}>Отмена</button>
+            </>)}
+
+            {loginStep === "waiting" && (<>
+              <div style={{ fontSize:48, marginBottom:16 }}>📱</div>
+              <div style={{ fontFamily:"'Unbounded',sans-serif", fontSize:15, marginBottom:12, color:"#1A1208" }}>
+                Подтвердите в боте
+              </div>
+              <div style={{ background:"#F4F1ED", borderRadius:12, padding:16, marginBottom:20 }}>
+                <div style={{ fontSize:12, color:"#7A7065", marginBottom:8 }}>Ваш код входа:</div>
+                <div style={{ fontFamily:"monospace", fontSize:28, fontWeight:700, color:"#E8541A", letterSpacing:6 }}>
+                  {loginCode}
+                </div>
+              </div>
+              <div style={{ fontSize:13, color:"#555", lineHeight:1.7, marginBottom:20 }}>
+                1. Бот откроется автоматически<br/>
+                2. Нажмите <b>«Подтвердить вход»</b><br/>
+                3. Страница обновится автоматически
+              </div>
+              <button onClick={() => window.open(`https://t.me/${BOT_NAME}?start=login_${loginCode}`, "_blank")}
+                style={{ width:"100%", padding:"12px 16px", background:"#229ED9", border:"none", borderRadius:12, color:"#fff", fontSize:14, cursor:"pointer", marginBottom:10 }}>
+                Открыть @{BOT_NAME}
+              </button>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8, fontSize:12, color:"#7A7065", marginBottom:16 }}>
+                <span style={{ display:"inline-block", width:8, height:8, borderRadius:"50%", background:"#22C55E", animation:"pulse 1.5s ease-in-out infinite" }}></span>
+                Ожидаю подтверждения...
+              </div>
+              <button onClick={cancelLogin} style={{ background:"none", border:"none", color:"#7A7065", fontSize:13, cursor:"pointer" }}>Отмена</button>
+            </>)}
           </div>
         </div>
       )}
