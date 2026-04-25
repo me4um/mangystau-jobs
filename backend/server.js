@@ -10,7 +10,6 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-// ===== GEMINI API =====
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'AIzaSyAgtSc2E9tAXMkNrbnOkJvq-dswyAd167w';
 
 async function geminiGenerate(prompt) {
@@ -40,7 +39,6 @@ async function geminiGenerate(prompt) {
   });
 }
 
-// ===== DATABASE =====
 const db = new Database(path.join(__dirname, 'jobs.db'));
 
 db.exec(`
@@ -98,7 +96,6 @@ if (count.c === 0) {
   ].forEach(j => insert.run(...j));
 }
 
-// ===== ROUTES =====
 app.get('/api/jobs', (req, res) => {
   const { sphere, type, area, q, limit = 50 } = req.query;
   let sql = 'SELECT * FROM jobs WHERE is_active = 1';
