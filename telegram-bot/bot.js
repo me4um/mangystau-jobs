@@ -337,7 +337,7 @@ console.log('MangystauJobs Telegram Bot started');      [{ text: 'Общепит
       [{ text: 'IT', callback_data: 'sphere_it' }, { text: 'Доставка', callback_data: 'sphere_delivery' }],
       [{ text: 'Другое', callback_data: 'sphere_other' }]
     
-  }
+  
 };
 
 const typeKeyboard = {
