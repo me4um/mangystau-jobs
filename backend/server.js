@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-const BOT_TOKEN = process.env.BOT_TOKEN || '8489505819:AAGPIl_Gxy7Q_EyRfS82Zr_SpkxssUPAf5E';
+const BOT_TOKEN = process.env.BOT_TOKEN || '8489505819:AAEPY0MdkiY01t0IPpzgMcaiyhbxUSkOgFM';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'AIzaSyAgtSc2E9tAXMkNrbnOkJvq-dswyAd167w';
 
 function sendTelegramMessage(chatId, text) {
