@@ -12,7 +12,6 @@ function setState(chatId, state) { userState[chatId] = { ...userState[chatId], .
 function getState(chatId) { return userState[chatId] || {}; }
 function clearState(chatId) { userState[chatId] = {}; }
 
-// ===== KEYBOARDS (без эмодзи) =====
 const mainKeyboard = {
   reply_markup: {
     keyboard: [
@@ -201,7 +200,6 @@ bot.on('message', async (msg) => {
   const triggers = ['Найти работу', 'Мои отклики', 'Разместить вакансию', 'AI подбор', 'Поддержка', 'Открыть сайт'];
   if (text.startsWith('/') || triggers.includes(text)) return;
 
-  // AI MATCHING
   if (state.action === 'ai_match') {
     clearState(chatId);
     const thinking = await bot.sendMessage(chatId, 'AI анализирует ваши навыки...');
@@ -233,7 +231,6 @@ bot.on('message', async (msg) => {
     return;
   }
 
-  // APPLY FLOW
   if (state.action === 'apply') {
     if (state.step === 'name') {
       setState(chatId, { step: 'phone', apply_name: text });
@@ -269,7 +266,6 @@ bot.on('message', async (msg) => {
     return;
   }
 
-  // POST JOB FLOW
   if (state.action === 'post_job') {
     const job = state.job || {};
     if (state.step === 'title') {
