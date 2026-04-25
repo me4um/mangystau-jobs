@@ -270,7 +270,7 @@ app.listen(PORT, () => console.log(`MangystauJobs API on port ${PORT}`));  const
   const checkString = Object.keys(rest).sort().map(k => `${k}=${rest[k]}`).join('\n');
   const hmac = crypto.createHmac('sha256', secretKey).update(checkString).digest('hex');
   return hmac === hash;
-}
+
 
 async function geminiGenerate(prompt) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
