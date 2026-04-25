@@ -98,7 +98,6 @@ if (count.c === 0) {
   ].forEach(j => ins.run(...j));
 }
 
-// AUTH
 app.post('/api/auth/telegram', (req, res) => {
   const authData = req.body;
   if (!verifyTelegramAuth(authData)) return res.status(401).json({ success: false, error: 'Invalid auth' });
@@ -134,7 +133,6 @@ app.delete('/api/auth/logout', (req, res) => {
   res.json({ success: true });
 });
 
-// JOBS
 app.get('/api/jobs', (req, res) => {
   const { sphere, type, area, q, limit = 50 } = req.query;
   let sql = 'SELECT * FROM jobs WHERE is_active=1'; const params = [];
@@ -161,7 +159,6 @@ app.post('/api/jobs', (req, res) => {
   res.json({ success: true, job: db.prepare('SELECT * FROM jobs WHERE id=?').get(result.lastInsertRowid) });
 });
 
-// APPLY — моментальное уведомление в Telegram
 app.post('/api/jobs/:id/apply', async (req, res) => {
   const { user_tg_id, user_name, user_phone, message } = req.body;
   const job = db.prepare('SELECT * FROM jobs WHERE id=? AND is_active=1').get(req.params.id);
@@ -193,7 +190,6 @@ app.patch('/api/applications/:id', (req, res) => {
   res.json({ success: true });
 });
 
-// AI
 app.post('/api/ai/match', async (req, res) => {
   const { skills, area, type } = req.body;
   if (!skills) return res.status(400).json({ success: false, error: 'Skills required' });
