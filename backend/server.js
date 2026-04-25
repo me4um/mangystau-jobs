@@ -148,7 +148,6 @@ app.post('/api/auth/confirm-login', (req, res) => {
   const token = crypto.randomBytes(32).toString('hex');
   db.prepare('INSERT INTO sessions (token,tg_id,expires_at) VALUES (?,?,?)').run(token, tg_id, Date.now() + 7*24*3600*1000);
   res.json({ success: true, token, user: db.prepare('SELECT * FROM users WHERE tg_id=?').get(tg_id) });
-});
 
 app.get('/api/auth/me', (req, res) => {
   const token = req.headers.authorization?.replace('Bearer ', '');
