@@ -1,0 +1,14 @@
+{
+  "name": "mangystau-jobs",
+  "version": "1.0.0",
+  "description": "MangystauJobs — Цифровая платформа занятости Мангистауской области",
+  "scripts": {
+    "install:all": "cd backend && npm install && cd ../frontend && npm install && cd ../telegram-bot && npm install",
+    "dev:backend": "cd backend && node server.js",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:bot": "cd telegram-bot && node bot.js",
+    "build:frontend": "cd frontend && npm run build"
+  },
+  "keywords": ["jobs", "aktau", "mangystau", "hackathon", "AI"],
+  "license": "MIT"
+}
