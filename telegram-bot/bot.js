@@ -1,7 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 
-const BOT_TOKEN = '8489505819:AAGPIl_Gxy7Q_EyRfS82Zr_SpkxssUPAf5E';
+const BOT_TOKEN = '8489505819:AAEPY0MdkiY01t0IPpzgMcaiyhbxUSkOgFM';
 const API_URL = process.env.API_URL || 'http://localhost:3001';
 const WEB_URL = process.env.WEB_URL || 'https://mangystau-jobs.vercel.app';
 
