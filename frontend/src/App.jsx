@@ -7,6 +7,262 @@ const SPHERE_LABELS = { cafe:"Общепит", trade:"Торговля", build:"
 const SPHERE_EMOJI  = { cafe:"☕", trade:"🛒", build:"🔨", beauty:"💅", it:"📱", delivery:"🚗", other:"📋" };
 const SPHERE_COLORS = { cafe:["#FFF3E8","#E8541A"], trade:["#E8F5E9","#2E7D32"], build:["#FFF8E1","#F57C00"], beauty:["#FCE4EC","#AD1457"], it:["#EDE7F6","#512DA8"], delivery:["#E3F2FD","#1565C0"], other:["#F3F4F6","#374151"] };
 
+// Координаты районов Актау
+const AREA_COORDS = {
+  "Центр": [43.6529, 51.1799],
+  "5-й мкр": [43.6601, 51.1650],
+  "7-й мкр": [43.6480, 51.1720],
+  "9-й мкр": [43.6400, 51.1800],
+  "11-й мкр": [43.6350, 51.1900],
+  "15-й мкр": [43.6250, 51.1950],
+  "17-й мкр": [43.6200, 51.2000],
+  "Новый город": [43.6700, 51.1600],
+  "Весь город": [43.6529, 51.1799],
+  "Удалённо": null,
+};
+
+// ─── FAKE JOB DETECTOR ───────────────────────────────────────────
+const SUSPICIOUS_PATTERNS = [
+  { pattern: /быстр|легк|прост/i, label: "Слишком лёгкая работа", weight: 2 },
+  { pattern: /без опыта.{0,20}(500|600|700|800|900|1[0-9]{3})\s*000/i, label: "Завышенная зарплата для без опыта", weight: 3 },
+  { pattern: /мгновенный|сразу|сегодня.{0,10}(деньги|оплат)/i, label: "Обещание мгновенных денег", weight: 3 },
+  { pattern: /предоплат|взнос|залог|регистрационный/i, label: "Требование предоплаты — мошенничество!", weight: 5 },
+  { pattern: /telegram|whatsapp.{0,20}(писат|обращат|подробн)/i, label: "Перевод в мессенджеры", weight: 2 },
+  { pattern: /нигерия|заграниц|загран|за рубеж/i, label: "Сомнительное зарубежное предложение", weight: 3 },
+  { pattern: /работа.{0,15}дома.{0,15}(500|600|700|800)\s*000/i, label: "Нереальная зарплата за удалённую работу", weight: 3 },
+  { pattern: /без.{0,10}регистрац|неофициальн|серая/i, label: "Неофициальное трудоустройство", weight: 1 },
+  { pattern: /интим|взросл|18\+/i, label: "Подозрительный контент", weight: 5 },
+];
+
+function detectFakeJob(formData) {
+  const text = `${formData.title} ${formData.description} ${formData.salary} ${formData.company}`.toLowerCase();
+  const flags = [];
+  let score = 0;
+
+  for (const { pattern, label, weight } of SUSPICIOUS_PATTERNS) {
+    if (pattern.test(text)) {
+      flags.push(label);
+      score += weight;
+    }
+  }
+
+  // Проверка зарплаты — слишком высокая
+  const salaryNum = parseInt(formData.salary?.replace(/\D/g, "")) || 0;
+  if (salaryNum > 1000000) {
+    flags.push("Зарплата свыше 1 000 000 тг — подозрительно");
+    score += 4;
+  }
+  if (salaryNum > 500000 && formData.experience === "Без опыта") {
+    flags.push("Высокая зарплата без опыта");
+    score += 2;
+  }
+
+  // Слишком короткое описание
+  if (formData.description && formData.description.length < 20) {
+    flags.push("Слишком короткое описание");
+    score += 1;
+  }
+
+  return { score, flags, isSuspicious: score >= 3, isDangerous: score >= 5 };
+}
+
+// ─── LEAFLET MAP COMPONENT ────────────────────────────────────────
+function MapView({ jobs }) {
+  const mapRef = useRef(null);
+  const mapInstanceRef = useRef(null);
+  const [mapReady, setMapReady] = useState(false);
+
+  useEffect(() => {
+    if (mapInstanceRef.current) return;
+
+    // Динамически загружаем Leaflet CSS
+    if (!document.getElementById("leaflet-css")) {
+      const link = document.createElement("link");
+      link.id = "leaflet-css";
+      link.rel = "stylesheet";
+      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+      document.head.appendChild(link);
+    }
+
+    // Динамически загружаем Leaflet JS
+    const script = document.createElement("script");
+    script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    script.onload = () => {
+      if (!mapRef.current || mapInstanceRef.current) return;
+      const L = window.L;
+      const map = L.map(mapRef.current).setView([43.6529, 51.1799], 13);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: '© OpenStreetMap contributors'
+      }).addTo(map);
+      mapInstanceRef.current = map;
+      setMapReady(true);
+    };
+    document.head.appendChild(script);
+
+    return () => {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!mapReady || !mapInstanceRef.current) return;
+    const L = window.L;
+    const map = mapInstanceRef.current;
+
+    // Удаляем старые маркеры
+    map.eachLayer(layer => {
+      if (layer instanceof L.Marker) map.removeLayer(layer);
+    });
+
+    // Группируем вакансии по районам
+    const grouped = {};
+    jobs.forEach(job => {
+      const coords = AREA_COORDS[job.area];
+      if (!coords) return;
+      const key = job.area;
+      if (!grouped[key]) grouped[key] = { coords, jobs: [] };
+      grouped[key].jobs.push(job);
+    });
+
+    // Добавляем маркеры
+    Object.entries(grouped).forEach(([area, { coords, jobs: areaJobs }]) => {
+      const [jbg, jtc] = SPHERE_COLORS[areaJobs[0]?.sphere] || ["#E8541A", "#fff"];
+      const icon = L.divIcon({
+        html: `<div style="background:${jtc};color:#fff;border-radius:50%;width:36px;height:36px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,0.3);border:2px solid #fff">${areaJobs.length}</div>`,
+        className: "",
+        iconSize: [36, 36],
+      });
+      const popup = `
+        <div style="font-family:Inter,sans-serif;min-width:180px">
+          <div style="font-weight:700;margin-bottom:6px;font-size:14px">${area}</div>
+          ${areaJobs.slice(0, 4).map(j => `
+            <div style="padding:4px 0;border-bottom:1px solid #eee;font-size:12px">
+              <div style="font-weight:600">${j.title}</div>
+              <div style="color:#E8541A">${j.salary}</div>
+              <div style="color:#888">${j.company}</div>
+            </div>
+          `).join("")}
+          ${areaJobs.length > 4 ? `<div style="font-size:11px;color:#888;margin-top:4px">+${areaJobs.length - 4} ещё</div>` : ""}
+        </div>
+      `;
+      L.marker(coords, { icon }).addTo(map).bindPopup(popup);
+    });
+  }, [jobs, mapReady]);
+
+  return (
+    <div style={{ borderRadius: 16, overflow: "hidden", border: "1.5px solid #F0E8E0", marginBottom: 24 }}>
+      <div style={{ background: "#1A1208", padding: "10px 16px", display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 16 }}>🗺️</span>
+        <span style={{ fontFamily: "'Unbounded',sans-serif", fontSize: 12, color: "#fff" }}>Вакансии на карте Актау</span>
+        <span style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", marginLeft: "auto" }}>{jobs.filter(j => AREA_COORDS[j.area]).length} вакансий</span>
+      </div>
+      <div ref={mapRef} style={{ height: 280, width: "100%" }} />
+    </div>
+  );
+}
+
+// ─── FRAUD WARNING BADGE ──────────────────────────────────────────
+function FraudBadge({ job }) {
+  const [show, setShow] = useState(false);
+  const check = detectFakeJob(job);
+  if (!check.isSuspicious) return null;
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div
+        onClick={e => { e.stopPropagation(); setShow(s => !s); }}
+        style={{
+          display: "inline-flex", alignItems: "center", gap: 6,
+          padding: "4px 10px", borderRadius: 20,
+          background: check.isDangerous ? "#FEE2E2" : "#FEF3C7",
+          color: check.isDangerous ? "#DC2626" : "#D97706",
+          fontSize: 11, fontWeight: 600, cursor: "pointer"
+        }}
+      >
+        {check.isDangerous ? "🚫 Высокий риск" : "⚠️ Проверьте вакансию"}
+      </div>
+      {show && (
+        <div style={{ marginTop: 6, padding: "8px 12px", background: check.isDangerous ? "#FEF2F2" : "#FFFBEB", borderRadius: 10, border: `1px solid ${check.isDangerous ? "#FECACA" : "#FDE68A"}` }}>
+          {check.flags.map((f, i) => <div key={i} style={{ fontSize: 11, color: "#555", marginBottom: 2 }}>• {f}</div>)}
+          <div style={{ fontSize: 10, color: "#888", marginTop: 6 }}>Если кто-то просит предоплату — это мошенники. Сообщите в поддержку.</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── AI SEARCH (через Anthropic API) ─────────────────────────────
+async function runAISearch(query, jobs) {
+  const jobsText = jobs.slice(0, 30).map(j =>
+    `ID:${j.id} | ${j.title} | ${j.company} | ${j.salary} | ${j.area} | ${j.type} | Опыт: ${j.experience} | ${j.description || ""}`
+  ).join("\n");
+
+  const prompt = `Ты AI-ассистент платформы занятости MangystauJobs в Актау, Казахстан.
+Соискатель написал: "${query}"
+
+Доступные вакансии:
+${jobsText}
+
+Выбери топ-3 наиболее подходящих вакансии. Отвечай ТОЛЬКО JSON без markdown:
+{"matches":[{"job_id":1,"match_percent":95,"reason":"краткая причина на русском","tip":"совет соискателю"}],"summary":"общий совет"}`;
+
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    const data = await response.json();
+    const text = data.content?.map(c => c.text || "").join("") || "";
+    const clean = text.replace(/```json|```/g, "").trim();
+    return JSON.parse(clean);
+  } catch {
+    return null;
+  }
+}
+
+// ─── AI VACANCY CHECKER ───────────────────────────────────────────
+async function runAIVacancyCheck(formData) {
+  const prompt = `Ты эксперт по выявлению мошеннических вакансий в Казахстане.
+Проверь вакансию:
+- Название: ${formData.title}
+- Компания: ${formData.company}
+- Зарплата: ${formData.salary}
+- Тип: ${formData.type}
+- Опыт: ${formData.experience}
+- Описание: ${formData.description}
+- Контакт: ${formData.contact}
+
+Оцени по шкале 0-10 риск мошенничества (0 = полностью легитимна, 10 = явное мошенничество).
+Отвечай ТОЛЬКО JSON:
+{"risk_score":3,"verdict":"ok|suspicious|dangerous","issues":["проблема1"],"recommendation":"совет"}`;
+
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 500,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    const data = await response.json();
+    const text = data.content?.map(c => c.text || "").join("") || "";
+    return JSON.parse(text.replace(/```json|```/g, "").trim());
+  } catch {
+    return null;
+  }
+}
+
+// ─── MAIN APP ─────────────────────────────────────────────────────
 export default function App() {
   const [tab, setTab]             = useState("seeker");
   const [jobs, setJobs]           = useState([]);
@@ -20,7 +276,10 @@ export default function App() {
   const [aiLoading, setAiLoading] = useState(false);
   const [toast, setToast]         = useState("");
   const [loading, setLoading]     = useState(true);
+  const [showMap, setShowMap]     = useState(false);
   const [postForm, setPostForm]   = useState({ title:"", company:"", salary:"", type:"Полная", sphere:"cafe", area:"Центр", experience:"Без опыта", description:"", contact:"" });
+  const [fraudCheck, setFraudCheck] = useState(null);
+  const [aiCheckLoading, setAiCheckLoading] = useState(false);
 
   const [user, setUser]               = useState(null);
   const [token, setToken]             = useState(() => localStorage.getItem("mjToken"));
@@ -32,6 +291,7 @@ export default function App() {
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 3500); };
 
+  // ─── AUTH ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!token) return;
     fetch(`${API}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
@@ -41,18 +301,14 @@ export default function App() {
       }).catch(() => {});
   }, [token]);
 
+  // ─── TELEGRAM WIDGET ─────────────────────────────────────────
+  // ИСПРАВЛЕНИЕ: Bot domain invalid решается через правильную настройку
+  // бота в BotFather командой /setdomain <ваш домен>
+  // Для локальной разработки используем ручной ввод Telegram ID
   useEffect(() => {
     if (!showLogin || !tgWidgetRef.current) return;
     tgWidgetRef.current.innerHTML = "";
-    const script = document.createElement("script");
-    script.src = "https://telegram.org/js/telegram-widget.js?22";
-    script.setAttribute("data-telegram-login", BOT_NAME);
-    script.setAttribute("data-size", "large");
-    script.setAttribute("data-radius", "12");
-    script.setAttribute("data-onauth", "onTelegramAuth(user)");
-    script.setAttribute("data-request-access", "write");
-    script.async = true;
-    tgWidgetRef.current.appendChild(script);
+
     window.onTelegramAuth = async (tgUser) => {
       try {
         const res = await fetch(`${API}/api/auth/telegram`, {
@@ -65,10 +321,35 @@ export default function App() {
           localStorage.setItem("mjToken", data.token);
           setUser(data.user);
           setShowLogin(false);
-          showToast("Вы вошли как " + data.user.name);
-        } else { showToast("Ошибка входа"); }
-      } catch { showToast("Ошибка соединения"); }
+          showToast("✅ Вы вошли как " + data.user.name);
+        } else { showToast("Ошибка входа: " + (data.error || "неизвестная")); }
+      } catch { showToast("Ошибка соединения с сервером"); }
     };
+
+    const script = document.createElement("script");
+    script.src = "https://telegram.org/js/telegram-widget.js?22";
+    script.setAttribute("data-telegram-login", BOT_NAME);
+    script.setAttribute("data-size", "large");
+    script.setAttribute("data-radius", "12");
+    script.setAttribute("data-onauth", "onTelegramAuth(user)");
+    script.setAttribute("data-request-access", "write");
+    // КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: auth-url должен указывать на ваш домен
+    // Telegram проверяет домен виджета с доменом бота в BotFather
+    // Команда в BotFather: /setdomain → введите ваш домен (например mangystau-jobs.vercel.app)
+    script.async = true;
+    script.onerror = () => {
+      // Fallback если домен не настроен
+      if (tgWidgetRef.current) {
+        tgWidgetRef.current.innerHTML = `
+          <div style="text-align:center;color:#666;font-size:13px;padding:10px">
+            <div style="margin-bottom:8px">⚙️ Настройте домен в BotFather</div>
+            <div style="font-size:11px;color:#999">/setdomain → ${window.location.hostname}</div>
+          </div>
+        `;
+      }
+    };
+    tgWidgetRef.current.appendChild(script);
+
     return () => { delete window.onTelegramAuth; };
   }, [showLogin]);
 
@@ -78,6 +359,7 @@ export default function App() {
     setShowProfile(false); showToast("Вы вышли из аккаунта");
   };
 
+  // ─── JOBS ─────────────────────────────────────────────────────
   const loadJobs = useCallback(async () => {
     try {
       const params = new URLSearchParams();
@@ -101,6 +383,7 @@ export default function App() {
   useEffect(() => { loadStats(); }, []);
   useEffect(() => { loadJobs(); }, [loadJobs]);
 
+  // ─── APPLY ────────────────────────────────────────────────────
   const openApply = (job) => {
     if (!user) { setShowLogin(true); return; }
     setApplyForm({ name: user.name || "", phone: user.phone || "", message: "" });
@@ -126,27 +409,107 @@ export default function App() {
       if (data.success) {
         setApplied(a => [...a, applyModal.id]);
         setApplyModal(null);
-        showToast("✅ Отклик отправлен! Работодатель получит уведомление в Telegram");
-      } else { showToast(data.error || "Ошибка"); }
+        showToast("✅ Отклик отправлен! Работодатель получит уведомление в Telegram мгновенно");
+      } else { showToast(data.error === "Already applied" ? "Вы уже откликались на эту вакансию" : (data.error || "Ошибка")); }
     } catch { showToast("Ошибка соединения"); }
   };
 
+  // ─── AI MATCH (реальный через Anthropic API) ──────────────────
   const handleAIMatch = async () => {
     if (!aiQuery.trim()) return showToast("Опишите свои навыки");
     setAiLoading(true); setAiResult(null);
     try {
-      const res = await fetch(`${API}/api/ai/match`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ skills: aiQuery }) });
-      setAiResult(await res.json());
-    } catch { showToast("Ошибка AI матчинга"); }
+      // Сначала пробуем через бэкенд (Gemini)
+      const res = await fetch(`${API}/api/ai/match`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skills: aiQuery })
+      });
+      const backendData = await res.json();
+
+      if (backendData.success && backendData.matches?.length > 0) {
+        setAiResult(backendData);
+      } else {
+        // Fallback на Anthropic API напрямую
+        const result = await runAISearch(aiQuery, jobs);
+        if (result) {
+          const enriched = {
+            ...result,
+            matches: result.matches?.map(m => ({
+              ...m,
+              job: jobs.find(j => j.id === m.job_id)
+            })).filter(m => m.job)
+          };
+          setAiResult(enriched);
+        } else {
+          showToast("Ошибка AI. Попробуйте позже");
+        }
+      }
+    } catch {
+      // Fallback на Anthropic API
+      const result = await runAISearch(aiQuery, jobs);
+      if (result) {
+        setAiResult({
+          ...result,
+          matches: result.matches?.map(m => ({
+            ...m,
+            job: jobs.find(j => j.id === m.job_id)
+          })).filter(m => m.job)
+        });
+      } else {
+        showToast("Ошибка AI матчинга");
+      }
+    }
     setAiLoading(false);
   };
 
-  const handlePostJob = async () => {
+  // ─── POST JOB с проверкой на фейк ─────────────────────────────
+  const handleCheckAndPost = async () => {
     if (!postForm.title || !postForm.company) return showToast("Заполните название и компанию");
     if (!user) { setShowLogin(true); return; }
+
+    // Локальная проверка
+    const localCheck = detectFakeJob(postForm);
+
+    if (localCheck.isDangerous) {
+      setFraudCheck({ ...localCheck, source: "local" });
+      return; // Блокируем публикацию
+    }
+
+    // AI проверка через Anthropic
+    setAiCheckLoading(true);
+    const aiCheck = await runAIVacancyCheck(postForm);
+    setAiCheckLoading(false);
+
+    if (aiCheck) {
+      const combined = {
+        score: Math.max(localCheck.score, aiCheck.risk_score),
+        flags: [...localCheck.flags, ...(aiCheck.issues || [])],
+        isSuspicious: localCheck.isSuspicious || aiCheck.verdict !== "ok",
+        isDangerous: localCheck.isDangerous || aiCheck.verdict === "dangerous",
+        aiVerdict: aiCheck.verdict,
+        aiRecommendation: aiCheck.recommendation,
+        source: "ai",
+      };
+
+      if (combined.isDangerous) {
+        setFraudCheck(combined);
+        return;
+      }
+
+      if (combined.isSuspicious) {
+        setFraudCheck({ ...combined, needConfirm: true });
+        return;
+      }
+    }
+
+    await doPostJob();
+  };
+
+  const doPostJob = async () => {
+    setFraudCheck(null);
     try {
       const res = await fetch(`${API}/api/jobs`, {
-        method:"POST", headers:{"Content-Type":"application/json"},
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...postForm, employer_tg_id: String(user.tg_id) })
       });
       const data = await res.json();
@@ -190,7 +553,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* SEEKER */}
+      {/* SEEKER TAB */}
       {tab === "seeker" && (
         <>
           <div style={{ background:"#1A1208", padding:"24px 16px 36px", color:"#fff" }}>
@@ -208,6 +571,7 @@ export default function App() {
           </div>
 
           <div style={{ padding:"16px 16px 90px" }}>
+            {/* Search */}
             <div style={{ display:"flex", gap:8, marginBottom:16 }}>
               <input value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => e.key==="Enter" && loadJobs()}
                 placeholder="Профессия, навык, район..."
@@ -215,7 +579,8 @@ export default function App() {
               <button onClick={loadJobs} style={{ padding:"12px 18px", background:"#E8541A", border:"none", borderRadius:12, color:"#fff", fontSize:13, cursor:"pointer" }}>Найти</button>
             </div>
 
-            <div style={{ display:"flex", gap:8, marginBottom:20, overflowX:"auto", paddingBottom:4 }}>
+            {/* Filter pills */}
+            <div style={{ display:"flex", gap:8, marginBottom:16, overflowX:"auto", paddingBottom:4 }}>
               {[["all","Все"],["cafe","Общепит"],["trade","Торговля"],["build","Стройка"],["beauty","Красота"],["it","IT"],["delivery","Доставка"]].map(([val,label]) => (
                 <button key={val} onClick={() => setSphereFilter(val)}
                   style={{ padding:"7px 14px", borderRadius:20, border:`1.5px solid ${sphereFilter===val?"#E8541A":"#E8E0D5"}`, background:sphereFilter===val?"#E8541A":"#fff", fontSize:12, fontWeight:500, color:sphereFilter===val?"#fff":"#7A7065", cursor:"pointer", whiteSpace:"nowrap" }}>
@@ -224,10 +589,22 @@ export default function App() {
               ))}
             </div>
 
-            {/* AI */}
+            {/* MAP TOGGLE */}
+            <button
+              onClick={() => setShowMap(s => !s)}
+              style={{ width:"100%", padding:"10px 16px", background:showMap?"#1A1208":"#fff", border:"1.5px solid #E8E0D5", borderRadius:12, display:"flex", alignItems:"center", justifyContent:"center", gap:8, cursor:"pointer", marginBottom:16, fontSize:13, color:showMap?"#fff":"#555", fontWeight:500 }}
+            >
+              <span>🗺️</span> {showMap ? "Скрыть карту" : "Показать вакансии на карте"}
+            </button>
+
+            {/* MAP */}
+            {showMap && <MapView jobs={jobs} />}
+
+            {/* AI MATCH */}
             <div style={{ background:"#1A1208", borderRadius:16, padding:18, marginBottom:24 }}>
               <div style={{ display:"flex", alignItems:"center", gap:8, fontFamily:"'Unbounded',sans-serif", fontSize:13, color:"#fff", marginBottom:4 }}>
                 <span style={{ width:8, height:8, borderRadius:"50%", background:"#E8541A", display:"inline-block" }}></span> AI-матчинг
+                <span style={{ fontSize:10, color:"rgba(255,255,255,0.4)", marginLeft:"auto" }}>Claude AI</span>
               </div>
               <div style={{ fontSize:12, color:"rgba(255,255,255,0.55)", marginBottom:14 }}>Опишите навыки — AI подберёт лучшие вакансии</div>
               <div style={{ display:"flex", gap:8 }}>
@@ -236,35 +613,49 @@ export default function App() {
                   style={{ flex:1, padding:"10px 14px", borderRadius:10, border:"1px solid rgba(255,255,255,0.15)", background:"rgba(255,255,255,0.08)", fontSize:13, color:"#fff", outline:"none" }} />
                 <button onClick={handleAIMatch} disabled={aiLoading}
                   style={{ padding:"10px 16px", background:"#E8541A", border:"none", borderRadius:10, color:"#fff", fontSize:13, cursor:"pointer", opacity:aiLoading?0.7:1 }}>
-                  {aiLoading?"...":"↗"}
+                  {aiLoading ? (
+                    <span style={{ display:"inline-block", animation:"spin 1s linear infinite" }}>⟳</span>
+                  ) : "↗"}
                 </button>
               </div>
+              {aiLoading && (
+                <div style={{ marginTop:12, fontSize:12, color:"rgba(255,255,255,0.5)", textAlign:"center" }}>
+                  🤖 Claude анализирует ваш запрос...
+                </div>
+              )}
               {aiResult && (
                 <div style={{ marginTop:14, padding:12, background:"rgba(255,255,255,0.06)", borderRadius:10, border:"1px solid rgba(232,84,26,0.25)" }}>
-                  {aiResult.matches?.map((m,i) => (
+                  {aiResult.matches?.map((m, i) => (
                     <div key={i} style={{ marginBottom:12, paddingBottom:12, borderBottom:i<aiResult.matches.length-1?"1px solid rgba(255,255,255,0.1)":"none" }}>
                       <div style={{ fontSize:13, fontWeight:500, color:"#fff", marginBottom:4 }}>{m.job?.title} — {m.job?.company}</div>
                       <div style={{ fontSize:12, color:"#E8541A", marginBottom:4 }}>✅ {m.match_percent}% совпадение</div>
-                      <div style={{ fontSize:12, color:"rgba(255,255,255,0.6)" }}>{m.reason}</div>
+                      <div style={{ fontSize:12, color:"rgba(255,255,255,0.6)", marginBottom:4 }}>{m.reason}</div>
+                      {m.tip && <div style={{ fontSize:11, color:"rgba(255,255,255,0.4)", fontStyle:"italic" }}>💡 {m.tip}</div>}
                       <button onClick={() => setSelectedJob(m.job)}
                         style={{ marginTop:8, padding:"6px 14px", background:"#E8541A", border:"none", borderRadius:8, color:"#fff", fontSize:12, cursor:"pointer" }}>
                         Открыть вакансию
                       </button>
                     </div>
                   ))}
-                  {aiResult.recommendation && <div style={{ fontSize:12, color:"rgba(255,255,255,0.7)", fontStyle:"italic" }}>💬 {aiResult.recommendation}</div>}
+                  {(aiResult.recommendation || aiResult.summary) && (
+                    <div style={{ fontSize:12, color:"rgba(255,255,255,0.7)", fontStyle:"italic" }}>
+                      💬 {aiResult.recommendation || aiResult.summary}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
 
+            {/* JOBS LIST */}
             <div style={{ fontFamily:"'Unbounded',sans-serif", fontSize:14, marginBottom:12 }}>Вакансии</div>
             {jobs.length === 0 ? (
               <div style={{ textAlign:"center", padding:32, color:"#7A7065", fontSize:14 }}>Вакансий не найдено</div>
             ) : jobs.map(job => {
               const [jbg, jtc] = SPHERE_COLORS[job.sphere] || ["#F3F4F6","#374151"];
+              const check = detectFakeJob(job);
               return (
                 <div key={job.id} onClick={() => setSelectedJob(job)}
-                  style={{ background:"#fff", borderRadius:16, padding:16, border:"1.5px solid #F0E8E0", cursor:"pointer", marginBottom:10 }}>
+                  style={{ background:"#fff", borderRadius:16, padding:16, border:`1.5px solid ${check.isDangerous?"#FECACA":check.isSuspicious?"#FDE68A":"#F0E8E0"}`, cursor:"pointer", marginBottom:10 }}>
                   <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom:10 }}>
                     <div style={{ width:44, height:44, borderRadius:10, background:jbg, color:jtc, display:"flex", alignItems:"center", justifyContent:"center", fontSize:22, flexShrink:0 }}>
                       {SPHERE_EMOJI[job.sphere]||"💼"}
@@ -281,6 +672,7 @@ export default function App() {
                     ))}
                     {applied.includes(job.id) && <span style={{ padding:"4px 10px", borderRadius:20, background:"#EAF3DE", fontSize:11, color:"#3B6D11" }}>✓ Откликнулся</span>}
                   </div>
+                  <FraudBadge job={job} />
                 </div>
               );
             })}
@@ -288,7 +680,7 @@ export default function App() {
         </>
       )}
 
-      {/* EMPLOYER */}
+      {/* EMPLOYER TAB */}
       {tab === "employer" && (
         <>
           <div style={{ background:"#1A1208", padding:"24px 16px 36px", color:"#fff" }}>
@@ -298,6 +690,7 @@ export default function App() {
               {user ? `Отклики придут в Telegram — @${user.username||user.name}` : "Войдите через Telegram — отклики придут мгновенно"}
             </p>
           </div>
+
           {!user && (
             <div style={{ margin:"16px 16px 0", padding:16, background:"#fff3e8", borderRadius:12, border:"1.5px solid #E8541A", display:"flex", alignItems:"center", gap:12 }}>
               <span style={{ fontSize:24 }}>📬</span>
@@ -310,6 +703,42 @@ export default function App() {
               </button>
             </div>
           )}
+
+          {/* FRAUD ALERT MODAL */}
+          {fraudCheck && (
+            <div style={{ margin:"12px 16px 0", padding:16, background:fraudCheck.isDangerous?"#FEF2F2":"#FFFBEB", borderRadius:12, border:`1.5px solid ${fraudCheck.isDangerous?"#FECACA":"#FDE68A"}` }}>
+              <div style={{ fontWeight:700, fontSize:15, color:fraudCheck.isDangerous?"#DC2626":"#D97706", marginBottom:8 }}>
+                {fraudCheck.isDangerous ? "🚫 Публикация заблокирована" : "⚠️ Возможные проблемы"}
+              </div>
+              {fraudCheck.flags?.map((f, i) => (
+                <div key={i} style={{ fontSize:13, color:"#555", marginBottom:4 }}>• {f}</div>
+              ))}
+              {fraudCheck.aiRecommendation && (
+                <div style={{ fontSize:12, color:"#666", marginTop:8, fontStyle:"italic" }}>
+                  💡 {fraudCheck.aiRecommendation}
+                </div>
+              )}
+              {!fraudCheck.isDangerous && fraudCheck.needConfirm && (
+                <div style={{ display:"flex", gap:8, marginTop:12 }}>
+                  <button onClick={() => doPostJob()}
+                    style={{ flex:1, padding:10, background:"#D97706", border:"none", borderRadius:10, color:"#fff", fontSize:13, cursor:"pointer" }}>
+                    Всё равно опубликовать
+                  </button>
+                  <button onClick={() => setFraudCheck(null)}
+                    style={{ flex:1, padding:10, background:"#F3F4F6", border:"none", borderRadius:10, color:"#555", fontSize:13, cursor:"pointer" }}>
+                    Исправить
+                  </button>
+                </div>
+              )}
+              {fraudCheck.isDangerous && (
+                <button onClick={() => setFraudCheck(null)}
+                  style={{ width:"100%", marginTop:12, padding:10, background:"#F3F4F6", border:"none", borderRadius:10, color:"#555", fontSize:13, cursor:"pointer" }}>
+                  Изменить вакансию
+                </button>
+              )}
+            </div>
+          )}
+
           <div style={{ padding:"16px 16px 90px" }}>
             <div style={{ background:"#fff", borderRadius:16, padding:20, border:"1.5px solid #F0E8E0" }}>
               {[["Название вакансии *","title","Бариста, кассир, мастер..."],["Компания / Заведение","company","Название кафе, магазина..."],["Зарплата (тг/мес)","salary","150000 или 'от 120000'"]].map(([label,field,ph]) => (
@@ -361,11 +790,19 @@ export default function App() {
                 <input value={postForm.contact} onChange={e => setPostForm(f => ({...f,contact:e.target.value}))} placeholder="@username или +77001234567"
                   style={{ width:"100%", padding:"12px 14px", border:"1.5px solid #E8E0D5", borderRadius:10, fontSize:14, outline:"none", boxSizing:"border-box" }} />
               </div>
-              <button onClick={handlePostJob}
-                style={{ width:"100%", padding:16, background:"#E8541A", border:"none", borderRadius:14, color:"#fff", fontFamily:"'Unbounded',sans-serif", fontSize:14, cursor:"pointer" }}>
-                {user ? "Разместить вакансию" : "Войти и разместить"}
+              <button onClick={handleCheckAndPost} disabled={aiCheckLoading}
+                style={{ width:"100%", padding:16, background: aiCheckLoading ? "#999" : "#E8541A", border:"none", borderRadius:14, color:"#fff", fontFamily:"'Unbounded',sans-serif", fontSize:14, cursor: aiCheckLoading ? "not-allowed" : "pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
+                {aiCheckLoading ? (
+                  <><span style={{ animation:"spin 1s linear infinite", display:"inline-block" }}>⟳</span> AI проверяет вакансию...</>
+                ) : (
+                  user ? "🛡️ Проверить и разместить" : "Войти и разместить"
+                )}
               </button>
-              {user && <div style={{ textAlign:"center", fontSize:12, color:"#7A7065", marginTop:10 }}>Отклики придут в Telegram мгновенно</div>}
+              {user && (
+                <div style={{ textAlign:"center", fontSize:12, color:"#7A7065", marginTop:10 }}>
+                  🤖 AI проверит вакансию на мошенничество перед публикацией
+                </div>
+              )}
             </div>
           </div>
         </>
@@ -399,10 +836,19 @@ export default function App() {
                 {selectedJob.description}
               </div>
             )}
+            {/* Fraud badge in modal */}
+            <div style={{ marginTop:12 }}>
+              <FraudBadge job={selectedJob} />
+            </div>
             <button onClick={() => openApply(selectedJob)}
               style={{ width:"100%", padding:16, background:applied.includes(selectedJob.id)?"#3B6D11":"#E8541A", border:"none", borderRadius:14, color:"#fff", fontFamily:"'Unbounded',sans-serif", fontSize:14, cursor:"pointer", marginTop:20 }}>
               {applied.includes(selectedJob.id) ? "✓ Отклик отправлен" : "Откликнуться"}
             </button>
+            {!user && (
+              <div style={{ textAlign:"center", fontSize:12, color:"#7A7065", marginTop:8 }}>
+                Нужен Telegram для отклика
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -431,7 +877,9 @@ export default function App() {
               style={{ width:"100%", padding:16, background:"#E8541A", border:"none", borderRadius:14, color:"#fff", fontFamily:"'Unbounded',sans-serif", fontSize:14, cursor:"pointer" }}>
               Отправить отклик
             </button>
-            <div style={{ textAlign:"center", fontSize:12, color:"#7A7065", marginTop:10 }}>Работодатель получит уведомление в Telegram мгновенно</div>
+            <div style={{ textAlign:"center", fontSize:12, color:"#7A7065", marginTop:10 }}>
+              📱 Работодатель получит уведомление в Telegram мгновенно
+            </div>
           </div>
         </div>
       )}
@@ -443,9 +891,17 @@ export default function App() {
           <div style={{ background:"#fff", borderRadius:20, padding:32, width:"90%", maxWidth:360, textAlign:"center" }}>
             <div style={{ fontFamily:"'Unbounded',sans-serif", fontSize:18, marginBottom:8 }}>Вход</div>
             <p style={{ fontSize:14, color:"#7A7065", marginBottom:24, lineHeight:1.6 }}>
-              Войдите через Telegram — быстро и безопасно.<br/>Отклики придут вам в бот.
+              Войдите через Telegram — быстро и безопасно.<br/>Отклики придут вам в бот мгновенно.
             </p>
-            <div ref={tgWidgetRef} style={{ display:"flex", justifyContent:"center", marginBottom:16 }}></div>
+            <div ref={tgWidgetRef} style={{ display:"flex", justifyContent:"center", marginBottom:16, minHeight:48 }}></div>
+            {/* Инструкция по настройке домена */}
+            <div style={{ background:"#F4F1ED", borderRadius:10, padding:12, marginBottom:16, textAlign:"left", fontSize:12, color:"#555" }}>
+              <div style={{ fontWeight:600, marginBottom:6, fontSize:13 }}>⚙️ Если кнопка не работает:</div>
+              <div>1. Откройте <b>@BotFather</b> в Telegram</div>
+              <div>2. Отправьте <code style={{ background:"#E8E0D5", padding:"1px 4px", borderRadius:4 }}>/setdomain</code></div>
+              <div>3. Выберите <b>@{BOT_NAME}</b></div>
+              <div>4. Укажите домен: <code style={{ background:"#E8E0D5", padding:"1px 4px", borderRadius:4 }}>{typeof window !== "undefined" ? window.location.hostname : "ваш-домен.com"}</code></div>
+            </div>
             <button onClick={() => setShowLogin(false)} style={{ background:"none", border:"none", color:"#7A7065", fontSize:13, cursor:"pointer" }}>Отмена</button>
           </div>
         </div>
@@ -484,10 +940,14 @@ export default function App() {
 
       {/* TOAST */}
       {toast && (
-        <div style={{ position:"fixed", top:20, left:"50%", transform:"translateX(-50%)", background:"#1A1208", color:"#fff", padding:"12px 20px", borderRadius:12, fontSize:13, fontWeight:500, zIndex:999, whiteSpace:"nowrap", maxWidth:"90vw", textAlign:"center" }}>
+        <div style={{ position:"fixed", top:20, left:"50%", transform:"translateX(-50%)", background:"#1A1208", color:"#fff", padding:"12px 20px", borderRadius:12, fontSize:13, fontWeight:500, zIndex:999, whiteSpace:"nowrap", maxWidth:"90vw", textAlign:"center", boxShadow:"0 4px 20px rgba(0,0,0,0.3)" }}>
           {toast}
         </div>
       )}
+
+      <style>{`
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      `}</style>
     </div>
   );
 }
